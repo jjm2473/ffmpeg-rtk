@@ -4,14 +4,14 @@
 	--pkg-config=pkg-config \
 	--disable-avdevice \
 	--disable-bzlib \
-	--enable-debug \
-	--disable-asm \
-	--disable-stripping \
-	--disable-optimizations \
+	--disable-debug \
+	--enable-asm \
+	--enable-stripping \
+	--enable-optimizations \
 	--disable-devices \
 	--disable-doc \
 	--disable-encoders \
-	--disable-ffprobe \
+	--enable-ffprobe \
 	--disable-ffplay \
 	--enable-pic \
 	--enable-libmp3lame \
