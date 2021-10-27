@@ -579,7 +579,7 @@ static int rma_decode_frame(AVCodecContext *avctx, void *data,
             }
 
             /* {h264,hevc}_mp4toannexb are used here and do not require flushing */
-            av_assert0(ret != AVERROR_EOF);
+            // av_assert0(ret != AVERROR_EOF);
 
             if (ret < 0)
                 return ret;
