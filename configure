@@ -6167,7 +6167,6 @@ enabled omx               && { check_header OMX_Core.h ||
 enabled rma               && { check_lib rma rtkMediaAccel.h RMA_Init -lRMA ||
                                die "ERROR RMA libs not found."; } &&
                              { add_cflags -isystem$source_path/compat/rtk ; } &&
-                             { add_extralibs -ltinycompress; } &&
                              { add_cppflags -DREALTEK_PATCH; }
 enabled omx_rpi           && { check_header OMX_Core.h ||
                                { ! enabled cross_compile && add_cflags -isystem/opt/vc/include/IL && check_header OMX_Core.h ; } ||

@@ -12,6 +12,7 @@
 	--disable-doc \
 	--disable-encoders \
 	--disable-ffprobe \
+	--disable-ffplay \
 	--enable-pic \
 	--enable-libmp3lame \
 	--disable-hwaccels \
@@ -164,5 +165,8 @@
 	--enable-encoder=eac3 \
 	--enable-encoder=aac \
 	--enable-encoder=ac3 \
-	--enable-decoder=aac_latm
-	
+	--enable-decoder=aac_latm \
+	--enable-nonfree \
+	--enable-libfdk-aac --enable-encoder=libfdk_aac \
+	--enable-libmp3lame --enable-encoder=libmp3lame \
+	--enable-libopus --enable-decoder=libopus --enable-encoder=libopus
