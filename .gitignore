@@ -1,2 +1,8 @@
 *.d
 *.o
+lib*.a
+lib*.so
+lib*.pc
+lib*.so.*
+lib*.ver
+lib*.version
