@@ -21,6 +21,17 @@
 
 #include "config.h"
 
+#ifdef REALTEK_PATCH
+#include "rtkMediaAccel.h"
+#define RMA_LIBNAME "libRMA.so"
+
+typedef struct RMALibContext {
+    void *lib;
+    RMA_ERRORTYPE (*rma_CheckValidBuffer)(void*, unsigned char *);
+    RMA_ERRORTYPE (*rma_Memcpy)(void*, void*, void*, unsigned int);
+} RMALibContext;
+#endif
+
 #if CONFIG_OMX_RPI
 #define OMX_SKIP64BIT
 #endif
@@ -72,6 +83,10 @@ static int64_t from_omx_ticks(OMX_TICKS value)
             return AVERROR_UNKNOWN;                                       \
         }                                                                 \
     } while (0)
+
+#ifdef REALTEK_PATCH
+#define USE_INPUT_DEC_FRAME_INTERVAL (0)
+#endif
 
 typedef struct OMXContext {
     void *lib;
@@ -225,7 +240,17 @@ typedef struct OMXCodecContext {
     uint8_t *output_buf;
     int output_buf_size;
 
+#if CONFIG_OMX_RPI
     int input_zerocopy;
+#endif
+#ifdef REALTEK_PATCH
+    int i_frame_interval;
+    int rotation;
+    int to_interlace;
+    int enc_select;
+    RMALibContext *rma_func;
+    int extraDataInit;
+#endif
     int profile;
 } OMXCodecContext;
 
@@ -270,7 +295,7 @@ static OMX_ERRORTYPE event_handler(OMX_HANDLETYPE component, OMX_PTR app_data, O
     switch (event) {
     case OMX_EventError:
         pthread_mutex_lock(&s->state_mutex);
-        av_log(s->avctx, AV_LOG_ERROR, "OMX error %"PRIx32"\n", (uint32_t) data1);
+        av_log(s->avctx, AV_LOG_ERROR, "OMX ENC error %"PRIx32"\n", (uint32_t) data1);
         s->error = data1;
         pthread_cond_broadcast(&s->state_cond);
         pthread_mutex_unlock(&s->state_mutex);
@@ -306,6 +331,7 @@ static OMX_ERRORTYPE empty_buffer_done(OMX_HANDLETYPE component, OMX_PTR app_dat
                                        OMX_BUFFERHEADERTYPE *buffer)
 {
     OMXCodecContext *s = app_data;
+#if CONFIG_OMX_RPI
     if (s->input_zerocopy) {
         if (buffer->pAppPrivate) {
             if (buffer->pOutputPortPrivate)
@@ -315,6 +341,7 @@ static OMX_ERRORTYPE empty_buffer_done(OMX_HANDLETYPE component, OMX_PTR app_dat
             buffer->pAppPrivate = NULL;
         }
     }
+#endif
     append_buffer(&s->input_mutex, &s->input_cond,
                   &s->num_free_in_buffers, s->free_in_buffers, buffer);
     return OMX_ErrorNone;
@@ -324,6 +351,7 @@ static OMX_ERRORTYPE fill_buffer_done(OMX_HANDLETYPE component, OMX_PTR app_data
                                       OMX_BUFFERHEADERTYPE *buffer)
 {
     OMXCodecContext *s = app_data;
+
     append_buffer(&s->output_mutex, &s->output_cond,
                   &s->num_done_out_buffers, s->done_out_buffers, buffer);
     return OMX_ErrorNone;
@@ -394,6 +422,7 @@ static av_cold int omx_component_init(AVCodecContext *avctx, const char *role)
     OMX_VIDEO_PARAM_BITRATETYPE vid_param_bitrate = { 0 };
     OMX_ERRORTYPE err;
     int i;
+	OMX_INDEXTYPE index;
 
     s->version.s.nVersionMajor = 1;
     s->version.s.nVersionMinor = 1;
@@ -410,6 +439,23 @@ static av_cold int omx_component_init(AVCodecContext *avctx, const char *role)
     av_strlcpy(role_params.cRole, role, sizeof(role_params.cRole));
     // Intentionally ignore errors on this one
     OMX_SetParameter(s->handle, OMX_IndexParamStandardComponentRole, &role_params);
+#ifdef REALTEK_PATCH
+    err = OMX_GetExtensionIndex (s->handle, (OMX_STRING) "OMX.google.android.index.storeMetaDataInBuffers", &index);
+    if(err == OMX_ErrorNone)
+    {
+        struct StoreMetaDataInBuffersParams {
+            OMX_U32 nSize;
+            OMX_VERSIONTYPE nVersion;
+            OMX_U32 nPortIndex;
+            OMX_BOOL bStoreMetaData;
+        };
+        struct StoreMetaDataInBuffersParams storeParams = {0};
+        storeParams.bStoreMetaData = OMX_TRUE;
+        OMX_SetParameter (s->handle, index, &storeParams);
+    }
+    else
+        av_log(avctx, AV_LOG_ERROR, "Store Meta Data in Buffers is not supported by component");
+#endif
 
     INIT_STRUCT(video_port_params);
     err = OMX_GetParameter(s->handle, OMX_IndexParamVideoInit, &video_port_params);
@@ -447,7 +493,8 @@ static av_cold int omx_component_init(AVCodecContext *avctx, const char *role)
         if (OMX_GetParameter(s->handle, OMX_IndexParamVideoPortFormat, &video_port_format) != OMX_ErrorNone)
             break;
         if (video_port_format.eColorFormat == OMX_COLOR_FormatYUV420Planar ||
-            video_port_format.eColorFormat == OMX_COLOR_FormatYUV420PackedPlanar) {
+            video_port_format.eColorFormat == OMX_COLOR_FormatYUV420PackedPlanar ||
+            video_port_format.eColorFormat == OMX_COLOR_FormatYUV420SemiPlanar) {
             s->color_format = video_port_format.eColorFormat;
             break;
         }
@@ -473,9 +520,9 @@ static av_cold int omx_component_init(AVCodecContext *avctx, const char *role)
     in_port_params.format.video.nFrameWidth  = avctx->width;
     in_port_params.format.video.nFrameHeight = avctx->height;
     if (avctx->framerate.den > 0 && avctx->framerate.num > 0)
-        in_port_params.format.video.xFramerate = (1 << 16) * avctx->framerate.num / avctx->framerate.den;
+        in_port_params.format.video.xFramerate = ((unsigned long)avctx->framerate.num << 16) / (unsigned int)avctx->framerate.den;
     else
-        in_port_params.format.video.xFramerate = (1 << 16) * avctx->time_base.den / avctx->time_base.num;
+        in_port_params.format.video.xFramerate = ((unsigned long)avctx->time_base.den << 16) / (unsigned int)avctx->time_base.num;
 
     err = OMX_SetParameter(s->handle, OMX_IndexParamPortDefinition, &in_port_params);
     CHECK(err);
@@ -494,7 +541,7 @@ static av_cold int omx_component_init(AVCodecContext *avctx, const char *role)
     out_port_params.format.video.nFrameHeight  = avctx->height;
     out_port_params.format.video.nStride       = 0;
     out_port_params.format.video.nSliceHeight  = 0;
-    out_port_params.format.video.nBitrate      = avctx->bit_rate;
+    //out_port_params.format.video.nBitrate      = avctx->bit_rate;
     out_port_params.format.video.xFramerate    = in_port_params.format.video.xFramerate;
     out_port_params.format.video.bFlagErrorConcealment  = OMX_FALSE;
     if (avctx->codec->id == AV_CODEC_ID_MPEG4)
@@ -508,13 +555,61 @@ static av_cold int omx_component_init(AVCodecContext *avctx, const char *role)
     CHECK(err);
     s->num_out_buffers = out_port_params.nBufferCountActual;
 
-    INIT_STRUCT(vid_param_bitrate);
-    vid_param_bitrate.nPortIndex     = s->out_port;
-    vid_param_bitrate.eControlRate   = OMX_Video_ControlRateVariable;
-    vid_param_bitrate.nTargetBitrate = avctx->bit_rate;
-    err = OMX_SetParameter(s->handle, OMX_IndexParamVideoBitrate, &vid_param_bitrate);
-    if (err != OMX_ErrorNone)
-        av_log(avctx, AV_LOG_WARNING, "Unable to set video bitrate parameter\n");
+#ifdef REALTEK_PATCH
+    if (s->rotation != 0) {
+        OMX_S32 degree;
+
+        err = OMX_GetExtensionIndex (s->handle, (OMX_STRING) "OMX.realtek.android.index.setVideoEncRotAngle", &index);
+
+        if (err == OMX_ErrorUnsupportedIndex) {
+            av_log(avctx, AV_LOG_ERROR, "Setting rotation not supported by component");
+        } else if (err != OMX_ErrorNone) {
+            av_log(avctx, AV_LOG_ERROR, "Failed to set rotation: (0x%08x)",  err);
+        }
+
+        degree = s->rotation;
+        err = OMX_SetParameter (s->handle, index, &degree);
+
+        if (err == OMX_ErrorUnsupportedIndex) {
+            av_log(avctx, AV_LOG_ERROR, "Setting rotation not supported by component");
+        } else if (err != OMX_ErrorNone) {
+            av_log(avctx, AV_LOG_ERROR, "Failed to set rotation: (0x%08x)", err);
+        }
+    }
+
+    if (s->to_interlace != 0) {
+        err = OMX_GetExtensionIndex (s->handle, (OMX_STRING) "OMX.RTK.index.EncodeToInterlace", &index);
+        if(err == OMX_ErrorNone)
+        {
+            err = OMX_SetParameter (s->handle, index, &s->to_interlace);
+
+            if (err == OMX_ErrorUnsupportedIndex) {
+                av_log(avctx, AV_LOG_ERROR, "Setting interlace is not supported by component");
+            } else if (err != OMX_ErrorNone) {
+                av_log(avctx, AV_LOG_ERROR, "Failed to set interlace: (0x%08x)", err);
+            }
+        }
+        else
+            av_log(avctx, AV_LOG_ERROR, "Setting interlace is not supported by component");
+    }
+
+    if (s->enc_select != 0) {
+        err = OMX_GetExtensionIndex (s->handle, (OMX_STRING) "OMX.realtek.android.index.setVideoEncIdx", &index);
+        if(err == OMX_ErrorNone)
+        {
+            err = OMX_SetParameter (s->handle, index, &s->enc_select);
+
+            if (err == OMX_ErrorUnsupportedIndex) {
+                av_log(avctx, AV_LOG_ERROR, "Setting encoder idx is not supported by component");
+            } else if (err != OMX_ErrorNone) {
+                av_log(avctx, AV_LOG_ERROR, "Failed to set encoder idx: (0x%08x)", err);
+            }
+        }
+        else
+            av_log(avctx, AV_LOG_ERROR, "Setting encoder idx is not supported by component");
+    }
+
+#endif
 
     if (avctx->codec->id == AV_CODEC_ID_H264) {
         OMX_VIDEO_PARAM_AVCTYPE avc = { 0 };
@@ -523,6 +618,17 @@ static av_cold int omx_component_init(AVCodecContext *avctx, const char *role)
         err = OMX_GetParameter(s->handle, OMX_IndexParamVideoAvc, &avc);
         CHECK(err);
         avc.nBFrames = 0;
+
+#ifdef REALTEK_PATCH
+        if(s->i_frame_interval != 0)
+        {
+            if(avctx->framerate.num !=0 && avctx->framerate.den != 0)
+                avc.nPFrames = (avctx->framerate.num) * (s->i_frame_interval) / (avctx->framerate.den);
+            else if(avctx->time_base.num !=0 && avctx->time_base.den != 0)
+                avc.nPFrames = (avctx->time_base.num) * (s->i_frame_interval) / (avctx->time_base.den);
+        }
+        else
+#endif
         avc.nPFrames = avctx->gop_size - 1;
         switch (s->profile == FF_PROFILE_UNKNOWN ? avctx->profile : s->profile) {
         case FF_PROFILE_H264_BASELINE:
@@ -541,6 +647,14 @@ static av_cold int omx_component_init(AVCodecContext *avctx, const char *role)
         CHECK(err);
     }
 
+    INIT_STRUCT(vid_param_bitrate);
+    vid_param_bitrate.nPortIndex     = s->out_port;
+    vid_param_bitrate.eControlRate   = OMX_Video_ControlRateConstant;
+    vid_param_bitrate.nTargetBitrate = avctx->bit_rate;
+    err = OMX_SetParameter(s->handle, OMX_IndexParamVideoBitrate, &vid_param_bitrate);
+    if (err != OMX_ErrorNone)
+        av_log(avctx, AV_LOG_WARNING, "Unable to set video bitrate parameter\n");
+
     err = OMX_SendCommand(s->handle, OMX_CommandStateSet, OMX_StateIdle, NULL);
     CHECK(err);
 
@@ -551,17 +665,38 @@ static av_cold int omx_component_init(AVCodecContext *avctx, const char *role)
     if (!s->in_buffer_headers || !s->free_in_buffers || !s->out_buffer_headers || !s->done_out_buffers)
         return AVERROR(ENOMEM);
     for (i = 0; i < s->num_in_buffers && err == OMX_ErrorNone; i++) {
+#if CONFIG_OMX_RPI
         if (s->input_zerocopy)
             err = OMX_UseBuffer(s->handle, &s->in_buffer_headers[i], s->in_port, s, in_port_params.nBufferSize, NULL);
         else
+#endif
             err = OMX_AllocateBuffer(s->handle, &s->in_buffer_headers[i],  s->in_port,  s, in_port_params.nBufferSize);
         if (err == OMX_ErrorNone)
             s->in_buffer_headers[i]->pAppPrivate = s->in_buffer_headers[i]->pOutputPortPrivate = NULL;
+#ifdef REALTEK_PATCH
+        else
+        {
+            av_log(avctx, AV_LOG_ERROR, "err %x (%d) on line %d\n", err, err, __LINE__);
+            s->num_in_buffers = i;
+            return AVERROR_UNKNOWN;
+        }
+#endif
     }
     CHECK(err);
     s->num_in_buffers = i;
     for (i = 0; i < s->num_out_buffers && err == OMX_ErrorNone; i++)
+#ifdef REALTEK_PATCH
+    {
+#endif
         err = OMX_AllocateBuffer(s->handle, &s->out_buffer_headers[i], s->out_port, s, out_port_params.nBufferSize);
+#ifdef REALTEK_PATCH
+        if (err != OMX_ErrorNone) {
+            av_log(avctx, AV_LOG_ERROR, "err %x (%d) on line %d\n", err, err, __LINE__);
+            s->num_out_buffers = i;
+            return AVERROR_UNKNOWN;
+        }
+    }
+#endif
     CHECK(err);
     s->num_out_buffers = i;
 
@@ -602,8 +737,10 @@ static av_cold void cleanup(OMXCodecContext *s)
         for (i = 0; i < s->num_in_buffers; i++) {
             OMX_BUFFERHEADERTYPE *buffer = get_buffer(&s->input_mutex, &s->input_cond,
                                                       &s->num_free_in_buffers, s->free_in_buffers, 1);
+#if CONFIG_OMX_RPI
             if (s->input_zerocopy)
                 buffer->pBuffer = NULL;
+#endif
             OMX_FreeBuffer(s->handle, s->in_port, buffer);
         }
         for (i = 0; i < s->num_out_buffers; i++) {
@@ -636,6 +773,34 @@ static av_cold void cleanup(OMXCodecContext *s)
     av_freep(&s->output_buf);
 }
 
+#ifdef REALTEK_PATCH
+static av_cold RMALibContext *rma_lib_init(void *logctx)
+{
+    RMALibContext *rma_func;
+
+    rma_func = av_mallocz(sizeof(*rma_func));
+    if (!rma_func)
+        return NULL;
+
+    rma_func->lib = dlopen(RMA_LIBNAME, RTLD_NOW | RTLD_GLOBAL);
+    if (!rma_func->lib) {
+        av_log(logctx, AV_LOG_WARNING, "%s not found\n", RMA_LIBNAME);
+        return NULL;
+    }
+    rma_func->rma_CheckValidBuffer = dlsym(rma_func->lib, "RMA_CheckValidBuffer");
+    rma_func->rma_Memcpy = dlsym(rma_func->lib, "RMA_Memcpy");
+
+    if (!rma_func->rma_Memcpy || !rma_func->rma_CheckValidBuffer) {
+        av_log(logctx, AV_LOG_WARNING, "Not all functions found in %s\n", RMA_LIBNAME);
+        dlclose(rma_func->lib);
+        rma_func->lib = NULL;
+        return NULL;
+    }
+
+    return rma_func;
+}
+#endif
+
 static av_cold int omx_encode_init(AVCodecContext *avctx)
 {
     OMXCodecContext *s = avctx->priv_data;
@@ -652,6 +817,13 @@ static av_cold int omx_encode_init(AVCodecContext *avctx)
     if (!s->omx_context)
         return AVERROR_ENCODER_NOT_FOUND;
 
+#ifdef REALTEK_PATCH
+    fprintf(stderr, "wenlin[%s][%s][%d] \n",__FILE__,__FUNCTION__, __LINE__);
+    s->rma_func = rma_lib_init(avctx);
+    if (!s->rma_func)
+        return AVERROR_EXTERNAL;
+#endif
+
     pthread_mutex_init(&s->state_mutex, NULL);
     pthread_cond_init(&s->state_cond, NULL);
     pthread_mutex_init(&s->input_mutex, NULL);
@@ -662,14 +834,19 @@ static av_cold int omx_encode_init(AVCodecContext *avctx)
     s->avctx = avctx;
     s->state = OMX_StateLoaded;
     s->error = OMX_ErrorNone;
+    s->extraDataInit = 0;
 
     switch (avctx->codec->id) {
+#if CONFIG_MPEG4_OMX_ENCODER
     case AV_CODEC_ID_MPEG4:
         role = "video_encoder.mpeg4";
         break;
+#endif
+#if CONFIG_H264_OMX_ENCODER
     case AV_CODEC_ID_H264:
         role = "video_encoder.avc";
         break;
+#endif
     default:
         return AVERROR(ENOSYS);
     }
@@ -683,9 +860,22 @@ static av_cold int omx_encode_init(AVCodecContext *avctx)
         goto fail;
 
     if (avctx->flags & AV_CODEC_FLAG_GLOBAL_HEADER) {
+#ifdef REALTEK_PATCH
+        buffer = get_buffer(&s->input_mutex, &s->input_cond,
+                    &s->num_free_in_buffers, s->free_in_buffers, 1);
+
+        buffer->nFlags = OMX_BUFFERFLAG_CODECCONFIG;
+        err = OMX_EmptyThisBuffer(s->handle, buffer);
+        if (err != OMX_ErrorNone) {
+            append_buffer(&s->input_mutex, &s->input_cond, &s->num_free_in_buffers, s->free_in_buffers, buffer);
+            av_log(avctx, AV_LOG_ERROR, "enc OMX_EmptyThisBuffer failed: %x\n", err);
+            return AVERROR_UNKNOWN;
+        }
+#endif
         while (1) {
             buffer = get_buffer(&s->output_mutex, &s->output_cond,
                                 &s->num_done_out_buffers, s->done_out_buffers, 1);
+
             if (buffer->nFlags & OMX_BUFFERFLAG_CODECCONFIG) {
                 if ((ret = av_reallocp(&avctx->extradata, avctx->extradata_size + buffer->nFilledLen + AV_INPUT_BUFFER_PADDING_SIZE)) < 0) {
                     avctx->extradata_size = 0;
@@ -694,6 +884,7 @@ static av_cold int omx_encode_init(AVCodecContext *avctx)
                 memcpy(avctx->extradata + avctx->extradata_size, buffer->pBuffer + buffer->nOffset, buffer->nFilledLen);
                 avctx->extradata_size += buffer->nFilledLen;
                 memset(avctx->extradata + avctx->extradata_size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+                s->extraDataInit = 1;
             }
             err = OMX_FillThisBuffer(s->handle, buffer);
             if (err != OMX_ErrorNone) {
@@ -749,6 +940,7 @@ static int omx_encode_frame(AVCodecContext *avctx, AVPacket *pkt,
 
         buffer->nFilledLen = av_image_fill_arrays(dst, linesize, buffer->pBuffer, avctx->pix_fmt, s->stride, s->plane_size, 1);
 
+#if CONFIG_OMX_RPI
         if (s->input_zerocopy) {
             uint8_t *src[4] = { NULL };
             int src_linesize[4];
@@ -792,11 +984,28 @@ static int omx_encode_frame(AVCodecContext *avctx, AVPacket *pkt,
                     buffer->nFilledLen = av_image_fill_arrays(dst, linesize, buffer->pBuffer, avctx->pix_fmt, s->stride, s->plane_size, 1);
                 }
             }
-        } else {
+        } else
+#endif
+        {
             need_copy = 1;
         }
         if (need_copy)
-            av_image_copy(dst, linesize, (const uint8_t**) frame->data, frame->linesize, avctx->pix_fmt, avctx->width, avctx->height);
+        {
+#ifdef REALTEK_PATCH
+            if(s->rma_func->rma_CheckValidBuffer(s->handle, frame->rtk_data) == 0)
+            {
+                RMA_BUFFERINFO* copy_buffer;
+                copy_buffer = (RMA_BUFFERINFO*)frame->rtk_data;
+
+                s->rma_func->rma_Memcpy(s->handle, buffer, copy_buffer, copy_buffer->nAllocLen);
+            }
+            else
+#endif
+            {
+                av_image_copy(dst, linesize, (const uint8_t**) frame->data, frame->linesize, avctx->pix_fmt, avctx->width, avctx->height);
+            }
+        }
+
         buffer->nFlags = OMX_BUFFERFLAG_ENDOFFRAME;
         buffer->nOffset = 0;
         // Convert the timestamps to microseconds; some encoders can ignore
@@ -837,6 +1046,7 @@ static int omx_encode_frame(AVCodecContext *avctx, AVPacket *pkt,
         if (buffer->nFlags & OMX_BUFFERFLAG_EOS)
             s->got_eos = 1;
 
+#ifndef REALTEK_PATCH
         if (buffer->nFlags & OMX_BUFFERFLAG_CODECCONFIG && avctx->flags & AV_CODEC_FLAG_GLOBAL_HEADER) {
             if ((ret = av_reallocp(&avctx->extradata, avctx->extradata_size + buffer->nFilledLen + AV_INPUT_BUFFER_PADDING_SIZE)) < 0) {
                 avctx->extradata_size = 0;
@@ -846,6 +1056,36 @@ static int omx_encode_frame(AVCodecContext *avctx, AVPacket *pkt,
             avctx->extradata_size += buffer->nFilledLen;
             memset(avctx->extradata + avctx->extradata_size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
         } else {
+#else
+        if (s->extraDataInit && (avctx->flags & AV_CODEC_FLAG_GLOBAL_HEADER)
+            && (buffer->nFlags & OMX_BUFFERFLAG_CODECCONFIG) && (buffer->nFlags & OMX_BUFFERFLAG_SYNCFRAME)) {
+                int newsize = s->output_buf_size + avctx->extradata_size + buffer->nFilledLen + AV_INPUT_BUFFER_PADDING_SIZE;;
+                s->extraDataInit = 0;
+                if ((ret = av_reallocp(&s->output_buf, newsize)) < 0) {
+                    s->output_buf_size = 0;
+                    goto end;
+                }
+                memcpy(s->output_buf + s->output_buf_size, avctx->extradata, avctx->extradata_size);
+                memcpy(s->output_buf + s->output_buf_size + avctx->extradata_size, buffer->pBuffer + buffer->nOffset, buffer->nFilledLen);
+                s->output_buf_size += avctx->extradata_size + buffer->nFilledLen;
+                if ((ret = av_packet_from_data(pkt, s->output_buf, s->output_buf_size)) < 0) {
+                    av_freep(&s->output_buf);
+                    s->output_buf_size = 0;
+                    goto end;
+                }
+                s->output_buf = NULL;
+                s->output_buf_size = 0;
+
+                pkt->pts = av_rescale_q(from_omx_ticks(buffer->nTimeStamp), AV_TIME_BASE_Q, avctx->time_base);
+                // We don't currently enable B-frames for the encoders, so set
+                // pkt->dts = pkt->pts. (The calling code behaves worse if the encoder
+                // doesn't set the dts).
+                pkt->dts = pkt->pts;
+                pkt->flags |= AV_PKT_FLAG_KEY;
+                *got_packet = 1;
+
+        } else {
+#endif
             if (!(buffer->nFlags & OMX_BUFFERFLAG_ENDOFFRAME) || !pkt->data) {
                 // If the output packet isn't preallocated, just concatenate everything in our
                 // own buffer
@@ -864,6 +1104,7 @@ static int omx_encode_frame(AVCodecContext *avctx, AVPacket *pkt,
                     }
                     s->output_buf = NULL;
                     s->output_buf_size = 0;
+
                 }
             } else {
                 // End of frame, and the caller provided a preallocated frame
@@ -872,6 +1113,7 @@ static int omx_encode_frame(AVCodecContext *avctx, AVPacket *pkt,
                            (int)(s->output_buf_size + buffer->nFilledLen));
                     goto end;
                 }
+
                 memcpy(pkt->data, s->output_buf, s->output_buf_size);
                 memcpy(pkt->data + s->output_buf_size, buffer->pBuffer + buffer->nOffset, buffer->nFilledLen);
                 av_freep(&s->output_buf);
@@ -892,7 +1134,7 @@ end:
         err = OMX_FillThisBuffer(s->handle, buffer);
         if (err != OMX_ErrorNone) {
             append_buffer(&s->output_mutex, &s->output_cond, &s->num_done_out_buffers, s->done_out_buffers, buffer);
-            av_log(avctx, AV_LOG_ERROR, "OMX_FillThisBuffer failed: %x\n", err);
+            av_log(avctx, AV_LOG_ERROR, "E OMX_FillThisBuffer failed: %x\n", err);
             ret = AVERROR_UNKNOWN;
         }
     }
@@ -904,6 +1146,18 @@ static av_cold int omx_encode_end(AVCodecContext *avctx)
     OMXCodecContext *s = avctx->priv_data;
 
     cleanup(s);
+#ifdef REALTEK_PATCH
+    if(s->rma_func)
+    {
+        if(s->rma_func->lib)
+        {
+            dlclose(s->rma_func->lib);
+            s->rma_func->lib = NULL;
+        }
+        av_free(s->rma_func);
+        s->rma_func = NULL;
+    }
+#endif
     return 0;
 }
 
@@ -913,7 +1167,13 @@ static av_cold int omx_encode_end(AVCodecContext *avctx)
 static const AVOption options[] = {
     { "omx_libname", "OpenMAX library name", OFFSET(libname), AV_OPT_TYPE_STRING, { 0 }, 0, 0, VDE },
     { "omx_libprefix", "OpenMAX library prefix", OFFSET(libprefix), AV_OPT_TYPE_STRING, { 0 }, 0, 0, VDE },
-    { "zerocopy", "Try to avoid copying input frames if possible", OFFSET(input_zerocopy), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 1, VE },
+#ifdef REALTEK_PATCH
+    { "i_frame_interval", "H264 encode I-Frame Interval, specified in seconds,you can choose 10, 24, 30 or 60", OFFSET(i_frame_interval), AV_OPT_TYPE_INT, { USE_INPUT_DEC_FRAME_INTERVAL }, 0, 60, VE },
+    { "rotation", "H264 encode rotation, you can choose 0, 90, 180 or 270", OFFSET(rotation), AV_OPT_TYPE_INT, { 0 }, 0, 270, VE },
+    { "to_interlace", "encode video to interlace", OFFSET(to_interlace), AV_OPT_TYPE_INT, { 0 }, 0, 1, VE },
+    { "enc_select", "Select which encoder(0 or 1) that you want", OFFSET(enc_select), AV_OPT_TYPE_INT, { 0 }, 0, 1, VE },
+#endif
+    //{ "zerocopy", "Try to avoid copying input frames if possible", OFFSET(input_zerocopy), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 1, VE },
     { "profile",  "Set the encoding profile", OFFSET(profile), AV_OPT_TYPE_INT,   { .i64 = FF_PROFILE_UNKNOWN },       FF_PROFILE_UNKNOWN, FF_PROFILE_H264_HIGH, VE, "profile" },
     { "baseline", "",                         0,               AV_OPT_TYPE_CONST, { .i64 = FF_PROFILE_H264_BASELINE }, 0, 0, VE, "profile" },
     { "main",     "",                         0,               AV_OPT_TYPE_CONST, { .i64 = FF_PROFILE_H264_MAIN },     0, 0, VE, "profile" },
@@ -921,12 +1181,12 @@ static const AVOption options[] = {
     { NULL }
 };
 
-static const enum AVPixelFormat omx_encoder_pix_fmts[] = {
-    AV_PIX_FMT_YUV420P, AV_PIX_FMT_NONE
+static const enum AVPixelFormat rtk_omx_enc_pix_fmts[] = {
+    AV_PIX_FMT_NV12, AV_PIX_FMT_NONE
 };
-
+#if CONFIG_MPEG4_OMX_ENCODER
 static const AVClass omx_mpeg4enc_class = {
-    .class_name = "mpeg4_omx",
+    .class_name = "mpeg4_omx_encoder",
     .item_name  = av_default_item_name,
     .option     = options,
     .version    = LIBAVUTIL_VERSION_INT,
@@ -940,29 +1200,31 @@ AVCodec ff_mpeg4_omx_encoder = {
     .init             = omx_encode_init,
     .encode2          = omx_encode_frame,
     .close            = omx_encode_end,
-    .pix_fmts         = omx_encoder_pix_fmts,
+    .pix_fmts         = rtk_omx_enc_pix_fmts,
     .capabilities     = AV_CODEC_CAP_DELAY,
     .caps_internal    = FF_CODEC_CAP_INIT_THREADSAFE | FF_CODEC_CAP_INIT_CLEANUP,
     .priv_class       = &omx_mpeg4enc_class,
 };
-
+#endif
+#if CONFIG_H264_OMX_ENCODER
 static const AVClass omx_h264enc_class = {
-    .class_name = "h264_omx",
+    .class_name = "h264_omx_encoder",
     .item_name  = av_default_item_name,
     .option     = options,
     .version    = LIBAVUTIL_VERSION_INT,
 };
 AVCodec ff_h264_omx_encoder = {
     .name             = "h264_omx",
-    .long_name        = NULL_IF_CONFIG_SMALL("OpenMAX IL H.264 video encoder"),
+    .long_name        = NULL_IF_CONFIG_SMALL("OpenMAX IL H264 video encoder"),
     .type             = AVMEDIA_TYPE_VIDEO,
     .id               = AV_CODEC_ID_H264,
     .priv_data_size   = sizeof(OMXCodecContext),
     .init             = omx_encode_init,
     .encode2          = omx_encode_frame,
     .close            = omx_encode_end,
-    .pix_fmts         = omx_encoder_pix_fmts,
+    .pix_fmts         = rtk_omx_enc_pix_fmts,
     .capabilities     = AV_CODEC_CAP_DELAY,
     .caps_internal    = FF_CODEC_CAP_INIT_THREADSAFE | FF_CODEC_CAP_INIT_CLEANUP,
     .priv_class       = &omx_h264enc_class,
 };
+#endif

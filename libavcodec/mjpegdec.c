@@ -2805,6 +2805,31 @@ AVCodec ff_mjpeg_decoder = {
                         NULL
                     },
 };
+#ifdef REALTEK_PATCH
+static const AVClass mjpeg_video_dec_class = {
+    .class_name = "MJPEG video decoder",
+    .item_name  = av_default_item_name,
+    .option     = options,
+    .version    = LIBAVUTIL_VERSION_INT,
+};
+
+AVCodec ff_mjpeg_video_decoder = {
+    .name           = "mjpeg_video",
+    .long_name      = NULL_IF_CONFIG_SMALL("MJPEG (Motion JPEG Video)"),
+    .type           = AVMEDIA_TYPE_VIDEO,
+    .id             = AV_CODEC_ID_MJPEG_RTK, //mjpeg
+    .priv_data_size = sizeof(MJpegDecodeContext),
+    .init           = ff_mjpeg_decode_init,
+    .close          = ff_mjpeg_decode_end,
+    .decode         = ff_mjpeg_decode_frame,
+    .flush          = decode_flush,
+    .capabilities   = AV_CODEC_CAP_DR1,
+    .max_lowres     = 3,
+    .priv_class     = &mjpeg_video_dec_class,
+    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE |
+                      FF_CODEC_CAP_SKIP_FRAME_FILL_PARAM,
+};
+#endif
 #endif
 #if CONFIG_THP_DECODER
 AVCodec ff_thp_decoder = {

@@ -508,6 +508,16 @@ static int update_stream_avctx(AVFormatContext *s)
         if (!st->internal->need_context_update)
             continue;
 
+#ifdef REALTEK_PATCH
+        //image uses native mjpeg decoder; video uses rtk rma decoder
+        if((st->codecpar->codec_id == AV_CODEC_ID_MJPEG) &&
+            (!(st->disposition & AV_DISPOSITION_ATTACHED_PIC) &&
+            (!(s->nb_streams == 1 &&
+            (av_match_ext(s->filename, "jpeg") | av_match_ext(s->filename, "jpg") |
+            (s->pb->buffer[0] == 0xFF && s->pb->buffer[1] == 0xD8 && s->pb->buffer[2] == 0xFF))))))
+            st->codecpar->codec_id = AV_CODEC_ID_MJPEG_RTK;
+#endif
+
         /* close parser, because it depends on the codec */
         if (st->parser && st->internal->avctx->codec_id != st->codecpar->codec_id) {
             av_parser_close(st->parser);

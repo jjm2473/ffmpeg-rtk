@@ -60,6 +60,12 @@
 
 #include <assert.h>
 
+#ifdef REALTEK_PATCH
+#include "compress_params.h"
+#include "tinycompress/tinycompress.h"
+struct compress *compress = NULL;
+#endif
+
 const char program_name[] = "ffplay";
 const int program_birth_year = 2003;
 
@@ -107,7 +113,35 @@ const int program_birth_year = 2003;
 
 #define USE_ONEPASS_SUBTITLE_RENDER 1
 
+#ifdef REALTEK_PATCH
+#include <dlfcn.h>
+#define __LINUX_MEDIA_NAS__ 1
+#include "rtk_mi.h"
+
+#define LIBNAME "libRTKMediaIf.so"
+#define CONFIG_AVFILTER 0
+
+
+typedef struct RTKFunc {
+    void *lib;
+    RtkMiReturn_e (*rtk_MI_Init)(MediaServiceSel_e);
+    RtkMiReturn_e (*rtk_MI_Destroy)(MediaServiceSel_e);
+    RtkMiReturn_e (*rtk_MI_Player_SetDispWindow)(unsigned int, unsigned int,unsigned int, unsigned int);
+    RtkMiReturn_e (*rtk_MI_Player_GetDispWindow)(unsigned int*, unsigned int*,unsigned int*, unsigned int*);
+    RtkMiReturn_e (*rtk_MI_Player_DirectFlip)(unsigned char *, unsigned int, unsigned int, long long, void *);
+    RtkMiReturn_e (*rtk_MI_Player_SetBlank)(unsigned char);
+    RtkMiReturn_e (*rtk_MI_Player_GetBlank)(unsigned char*);
+    RtkMiReturn_e (*rtk_MI_VO_SetOutputAttribute)(HDMIAttr_t, DPAttr_t);
+    RtkMiReturn_e (*rtk_MI_VO_GetOutput)(HDMITxSt_t *, DPTxSt_t *);
+    RtkMiReturn_e (*rtk_MI_ShowVersion)(void);
+} RTKFunc;
+
+
+#endif
+
+#ifndef REALTEK_PATCH
 static unsigned sws_flags = SWS_BICUBIC;
+#endif
 
 typedef struct MyAVPacketList {
     AVPacket pkt;
@@ -304,16 +338,31 @@ typedef struct VideoState {
     int last_video_stream, last_audio_stream, last_subtitle_stream;
 
     SDL_cond *continue_read_thread;
+
+#ifdef REALTEK_PATCH
+    RTKFunc *rtk_func;
+    SDL_Rect dispWin;
+#endif
 } VideoState;
 
 /* options specified by the user */
 static AVInputFormat *file_iformat;
 static const char *input_filename;
 static const char *window_title;
+#ifndef REALTEK_PATCH
 static int default_width  = 640;
 static int default_height = 480;
 static int screen_width  = 0;
 static int screen_height = 0;
+#else
+static int default_width  = 1920;
+static int default_height = 1080;
+static int screen_width  = 1920;
+static int screen_height = 1080;
+static HDMIAttr_t hdmiAttr = {HDMI_OUTPUT_NONE, OUTPUT_BIT_DEPTH_NONE};
+static int rtk_mi_version;
+VideoState *gIs = NULL;
+#endif
 static int audio_disable;
 static int video_disable;
 static int subtitle_disable;
@@ -350,6 +399,11 @@ static char *afilters = NULL;
 #endif
 static int autorotate = 1;
 static int find_stream_info = 1;
+
+#ifdef REALTEK_PATCH
+static int audio_compr = 0;
+static int audcompr_finished = 0;
+#endif
 
 /* current context */
 static int is_full_screen;
@@ -397,6 +451,133 @@ static int opt_add_vfilter(void *optctx, const char *opt, const char *arg)
     vfilters_list[nb_vfilters - 1] = arg;
     return 0;
 }
+#endif
+
+#ifdef REALTEK_PATCH
+static int rtk_load(RTKFunc *s)
+{
+    s->lib = dlopen(LIBNAME, RTLD_NOW | RTLD_GLOBAL);
+    if (!s->lib) {
+        av_log(NULL, AV_LOG_ERROR, "%s not found\n", LIBNAME);
+        return -1;
+    }
+    s->rtk_MI_Init                = (RtkMiReturn_e (*)(MediaServiceSel_e))dlsym(s->lib, "rtk_MI_Init");
+    s->rtk_MI_Destroy                 = (RtkMiReturn_e (*)(MediaServiceSel_e))dlsym(s->lib, "rtk_MI_Destroy");
+    s->rtk_MI_Player_SetDispWindow           = (RtkMiReturn_e (*)(unsigned int, unsigned int,unsigned int, unsigned int))dlsym(s->lib, "rtk_MI_Player_SetDispWindow");
+    s->rtk_MI_Player_GetDispWindow    = (RtkMiReturn_e (*)(unsigned int*, unsigned int*,unsigned int*, unsigned int*))dlsym(s->lib, "rtk_MI_Player_GetDispWindow");
+    s->rtk_MI_Player_DirectFlip               = (RtkMiReturn_e (*)(unsigned char *, unsigned int, unsigned int, long long, void *))dlsym(s->lib, "rtk_MI_Player_DirectFlip");
+    s->rtk_MI_Player_SetBlank                   = (RtkMiReturn_e (*)(unsigned char))dlsym(s->lib, "rtk_MI_Player_SetBlank");
+    s->rtk_MI_Player_GetBlank                   = (RtkMiReturn_e (*)(unsigned char*))dlsym(s->lib, "rtk_MI_Player_GetBlank");
+    s->rtk_MI_VO_SetOutputAttribute         = (RtkMiReturn_e (*)(HDMIAttr_t, DPAttr_t))dlsym(s->lib, "rtk_MI_VO_SetOutputAttribute");
+    s->rtk_MI_VO_GetOutput                   = (RtkMiReturn_e (*)(HDMITxSt_t *, DPTxSt_t *))dlsym(s->lib, "rtk_MI_VO_GetOutput");
+    s->rtk_MI_ShowVersion                = (RtkMiReturn_e (*)(void))dlsym(s->lib, "rtk_MI_ShowVersion");
+
+    if (!s->rtk_MI_Init || !s->rtk_MI_Destroy ||
+      !s->rtk_MI_Player_SetDispWindow ||!s->rtk_MI_Player_GetDispWindow ||
+      !s->rtk_MI_Player_DirectFlip ||
+      !s->rtk_MI_Player_SetBlank || !s->rtk_MI_Player_GetBlank ||
+      !s->rtk_MI_VO_SetOutputAttribute || !s->rtk_MI_VO_GetOutput ||
+      !s->rtk_MI_ShowVersion ) {
+      av_log(NULL, AV_LOG_ERROR, "%s functions are fail\n", LIBNAME);
+      av_log(NULL, AV_LOG_ERROR, "%d, %d, %d, %d, %d, %d, %d, %d, %d %d\n",
+        !s->rtk_MI_Init, !s->rtk_MI_Destroy, !s->rtk_MI_Player_SetDispWindow, !s->rtk_MI_Player_GetDispWindow,
+        !s->rtk_MI_Player_DirectFlip, !s->rtk_MI_Player_SetBlank, !s->rtk_MI_Player_GetBlank,  !s->rtk_MI_VO_SetOutputAttribute, !s->rtk_MI_VO_GetOutput,  !s->rtk_MI_ShowVersion );
+      dlclose(s->lib);
+      s->lib = NULL;
+      return -1;
+    }
+    return 0;
+}
+
+/* RTK function */
+static RTKFunc *rtk_init(VideoState *is)
+{
+    int ret;
+    RTKFunc *rtk_func = NULL;
+
+    rtk_func = (RTKFunc*)malloc(sizeof(*rtk_func));
+    if (!rtk_func)
+        return NULL;
+
+    memset(rtk_func, 0, sizeof(*rtk_func));
+
+    ret = rtk_load(rtk_func);
+    if (ret < 0) {
+        free(rtk_func);
+        return NULL;
+    }
+
+    if(rtk_mi_version)
+       rtk_func->rtk_MI_ShowVersion();
+
+    if(rtk_func->rtk_MI_Init(MEDIA_SERVICE_PLAYER) != RTK_MI_SUCCESS)
+    {
+        free(rtk_func);
+        av_log(NULL, AV_LOG_ERROR, "rtk direct display init fail\n");
+        return NULL;
+    }
+
+    if(rtk_func->rtk_MI_Player_SetBlank(0) != RTK_MI_SUCCESS)
+        av_log(NULL, AV_LOG_ERROR, "rtk unblank fail\n");
+
+    return rtk_func;
+}
+
+static void rtk_deinit(VideoState *is)
+{
+    if ((!is) || (!is->rtk_func))
+      return;
+
+    if(is->rtk_func->rtk_MI_Player_SetBlank(1) != RTK_MI_SUCCESS)
+        av_log(NULL, AV_LOG_ERROR, "rtk blank fail\n");
+
+    if(is->rtk_func->rtk_MI_Destroy(MEDIA_SERVICE_PLAYER) != RTK_MI_SUCCESS)
+        av_log(NULL, AV_LOG_ERROR, "rtk destroy fail\n");
+
+    if(is->rtk_func->lib)
+      dlclose(is->rtk_func->lib);
+    free(is->rtk_func);
+
+}
+
+static void rtk_direct_render(VideoState *is, AVFrame *frame)
+{
+    RtkMiReturn_e ret = RTK_MI_SUCCESS;
+
+    if(frame->format != AV_PIX_FMT_NV12)
+    {
+        //convert to NV12
+        struct SwsContext *img_convert_ctx = NULL;
+        uint8_t *dst_data[4];
+        int dst_linesize[4];
+        if ((ret = av_image_alloc(dst_data, dst_linesize,
+                                  frame->width, frame->height, AV_PIX_FMT_NV12, 16)) < 0) {
+            fprintf(stderr, "Could not allocate destination image\n");
+            return;
+        }
+        img_convert_ctx = sws_getCachedContext(img_convert_ctx,
+            frame->width, frame->height, frame->format, frame->width, frame->height,
+            AV_PIX_FMT_NV12, 0, NULL, NULL, NULL);
+        if (img_convert_ctx != NULL) {
+            sws_scale(img_convert_ctx, (const uint8_t * const *)frame->data, frame->linesize,
+                      0, frame->height, dst_data, dst_linesize);
+        } else {
+            av_log(NULL, AV_LOG_FATAL, "Cannot initialize the conversion context\n");
+        }
+
+        ret = is->rtk_func->rtk_MI_Player_DirectFlip(dst_data[0], frame->width, frame->height, frame->pts, frame->rtk_data);
+        if(dst_data[0])
+            av_freep(&dst_data[0]);
+    }
+    else
+    {
+        ret = is->rtk_func->rtk_MI_Player_DirectFlip(frame->data[0], frame->width, frame->height, frame->pts, frame->rtk_data);
+        if(ret != RTK_MI_SUCCESS){
+            av_log(NULL, AV_LOG_ERROR, "RTK render fail %d\n", ret);
+        }
+    }
+}
+
 #endif
 
 static inline
@@ -573,6 +754,33 @@ static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *seria
     return ret;
 }
 
+#ifdef REALTEK_PATCH
+/* return 1 on success, and 0 otherwise. */
+static int rtk_compress_write(AVPacket *pkt)
+{
+    uint8_t *readptr;
+    int wrote, left;
+
+    if (pkt->size == 0)
+        return 0;
+
+    if (!is_compress_running(compress))
+        compress_start(compress);
+
+    readptr = pkt->data;
+    left = pkt->size;
+    do {
+        wrote = compress_write(compress, readptr, left);
+        if (wrote < 0)
+            return 0;
+        left -= wrote;
+        readptr += wrote;
+    } while (left > 0);
+
+    return 1;
+}
+#endif
+
 static void decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *queue, SDL_cond *empty_queue_cond) {
     memset(d, 0, sizeof(Decoder));
     d->avctx = avctx;
@@ -659,6 +867,20 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
                     }
                     ret = got_frame ? 0 : (pkt.data ? AVERROR(EAGAIN) : AVERROR_EOF);
                 }
+#ifdef REALTEK_PATCH
+            } else if (audio_compr && d->avctx->codec_type == AVMEDIA_TYPE_AUDIO) {
+                int got_frame = 0;
+                got_frame = rtk_compress_write(&pkt);
+                av_packet_unref(&pkt);
+                if (got_frame)
+                    return 1;
+                else {
+                    /* EOF */
+                    av_usleep(1000000);
+                    audcompr_finished = 1;
+                    return 0;
+                }
+#endif
             } else {
                 if (avcodec_send_packet(d->avctx, &pkt) == AVERROR(EAGAIN)) {
                     av_log(d->avctx, AV_LOG_ERROR, "Receive_frame and send_packet both returned EAGAIN, which is an API violation.\n");
@@ -902,7 +1124,7 @@ static void get_sdl_pix_fmt_and_blendmode(int format, Uint32 *sdl_pix_fmt, SDL_B
         }
     }
 }
-
+#ifndef REALTEK_PATCH
 static int upload_texture(SDL_Texture **tex, AVFrame *frame, struct SwsContext **img_convert_ctx) {
     int ret = 0;
     Uint32 sdl_pix_fmt;
@@ -953,7 +1175,7 @@ static int upload_texture(SDL_Texture **tex, AVFrame *frame, struct SwsContext *
     }
     return ret;
 }
-
+#endif
 static void video_image_display(VideoState *is)
 {
     Frame *vp;
@@ -1009,13 +1231,26 @@ static void video_image_display(VideoState *is)
     calculate_display_rect(&rect, is->xleft, is->ytop, is->width, is->height, vp->width, vp->height, vp->sar);
 
     if (!vp->uploaded) {
+#ifndef REALTEK_PATCH
         if (upload_texture(&is->vid_texture, vp->frame, &is->img_convert_ctx) < 0)
             return;
+#else
+        if(memcmp(&rect, &is->dispWin, sizeof(rect)) != 0)
+        {
+            is->rtk_func->rtk_MI_Player_SetDispWindow(rect.x, rect.y, rect.w, rect.h);
+            is->dispWin.x = rect.x;
+            is->dispWin.y = rect.y;
+            is->dispWin.w = rect.w;
+            is->dispWin.h = rect.h;
+        }
+        rtk_direct_render(is, vp->frame);
+#endif
         vp->uploaded = 1;
         vp->flip_v = vp->frame->linesize[0] < 0;
     }
-
+#ifndef REALTEK_PATCH
     SDL_RenderCopyEx(renderer, is->vid_texture, NULL, &rect, 0, NULL, vp->flip_v ? SDL_FLIP_VERTICAL : 0);
+#endif
     if (sp) {
 #if USE_ONEPASS_SUBTITLE_RENDER
         SDL_RenderCopy(renderer, is->sub_texture, NULL, &rect);
@@ -1046,6 +1281,12 @@ static void video_audio_display(VideoState *s)
     int ch, channels, h, h2;
     int64_t time_diff;
     int rdft_bits, nb_freq;
+
+#ifdef REALTEK_PATCH
+    /* do not show wave */
+    if (audio_compr)
+        return;
+#endif
 
     for (rdft_bits = 1; (1 << rdft_bits) < 2 * s->height; rdft_bits++)
         ;
@@ -1273,14 +1514,31 @@ static void stream_close(VideoState *is)
         SDL_DestroyTexture(is->vid_texture);
     if (is->sub_texture)
         SDL_DestroyTexture(is->sub_texture);
+#ifndef REALTEK_PATCH
     av_free(is);
+#endif
 }
 
 static void do_exit(VideoState *is)
 {
+#ifdef REALTEK_PATCH
+    if ((!is) || (!is->rtk_func))
+      return;
+
+    if(is->rtk_func->rtk_MI_Player_SetBlank(1) != RTK_MI_SUCCESS)
+        av_log(NULL, AV_LOG_ERROR, "rtk blank fail\n");
+    avcodec_flush_buffers(is->viddec.avctx);
+#endif
+
     if (is) {
         stream_close(is);
     }
+#ifdef REALTEK_PATCH
+    rtk_deinit(is);
+
+     av_free(is);
+#endif
+
     if (renderer)
         SDL_DestroyRenderer(renderer);
     if (window)
@@ -1290,6 +1548,14 @@ static void do_exit(VideoState *is)
     av_freep(&vfilters_list);
 #endif
     avformat_network_deinit();
+#ifdef REALTEK_PATCH
+    if (audio_compr) {
+        if (compress) {
+            compress_stop(compress);
+            compress_close(compress);
+        }
+    }
+#endif
     if (show_status)
         printf("\n");
     SDL_Quit();
@@ -1297,9 +1563,28 @@ static void do_exit(VideoState *is)
     exit(0);
 }
 
+#ifdef REALTEK_PATCH
+static volatile int received_nb_signals = -1;
+#endif
 static void sigterm_handler(int sig)
 {
+
+#ifdef REALTEK_PATCH
+    received_nb_signals ++;
+
+    if(received_nb_signals > 10) {
+        printf("Received > 10 system signals, hard exiting\n");
+
+        exit(123);
+    }
+    else{
+        signal(sig , sigterm_handler);
+        if(received_nb_signals == 0)
+            do_exit(gIs);
+    }
+#else
     exit(123);
+#endif
 }
 
 static void set_default_window_size(int width, int height, AVRational sar)
@@ -1322,19 +1607,25 @@ static int video_open(VideoState *is)
         h = default_height;
     }
 
-    if (!window_title)
-        window_title = input_filename;
-    SDL_SetWindowTitle(window, window_title);
+    //if (!window_title)
+    //    window_title = input_filename;
+    //SDL_SetWindowTitle(window, window_title);
 
-    SDL_SetWindowSize(window, w, h);
-    SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-    if (is_full_screen)
-        SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
-    SDL_ShowWindow(window);
+    //SDL_SetWindowSize(window, w, h);
+    //SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    //if (is_full_screen)
+        //SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+    //SDL_ShowWindow(window);
 
+#ifdef REALTEK_PATCH
+    is->rtk_func->rtk_MI_Player_SetDispWindow(0, 0, w, h);
+#endif
     is->width  = w;
     is->height = h;
-
+    is->dispWin.x = 0;
+    is->dispWin.y = 0;
+    is->dispWin.w = w;
+    is->dispWin.h = h;
     return 0;
 }
 
@@ -1593,7 +1884,13 @@ retry:
                 is->frame_timer = av_gettime_relative() / 1000000.0;
 
             if (is->paused)
+            {
+#ifdef REALTEK_PATCH
+                return;
+#else
                 goto display;
+#endif
+            }
 
             /* compute nominal last_duration */
             last_duration = vp_duration(is, lastvp, vp);
@@ -1602,7 +1899,11 @@ retry:
             time= av_gettime_relative()/1000000.0;
             if (time < is->frame_timer + delay) {
                 *remaining_time = FFMIN(is->frame_timer + delay - time, *remaining_time);
+#ifdef REALTEK_PATCH
+                return;
+#else
                 goto display;
+#endif
             }
 
             is->frame_timer += delay;
@@ -1664,7 +1965,9 @@ retry:
             if (is->step && !is->paused)
                 stream_toggle_pause(is);
         }
+#ifndef REALTEK_PATCH
 display:
+#endif
         /* display picture */
         if (!display_disable && is->force_refresh && is->show_mode == SHOW_MODE_VIDEO && is->pictq.rindex_shown)
             video_display(is);
@@ -2022,6 +2325,12 @@ static int audio_thread(void *arg)
             goto the_end;
 
         if (got_frame) {
+#ifdef REALTEK_PATCH
+                /* have written compressed data to sound device in decoder_decode_frame() */
+                if (audio_compr) {
+                    continue;
+                }
+#endif
                 tb = (AVRational){1, frame->sample_rate};
 
 #if CONFIG_AVFILTER
@@ -2471,7 +2780,11 @@ static int audio_open(void *opaque, int64_t wanted_channel_layout, int wanted_nb
     SDL_AudioSpec wanted_spec, spec;
     const char *env;
     static const int next_nb_channels[] = {0, 0, 1, 6, 2, 6, 4, 6};
+#ifdef REALTEK_PATCH
+    static const int next_sample_rates[] = {0, 16000, 32000, 44100, 48000, 96000, 192000};
+#else
     static const int next_sample_rates[] = {0, 44100, 48000, 96000, 192000};
+#endif
     int next_sample_rate_idx = FF_ARRAY_ELEMS(next_sample_rates) - 1;
 
     env = SDL_getenv("SDL_AUDIO_CHANNELS");
@@ -2496,6 +2809,10 @@ static int audio_open(void *opaque, int64_t wanted_channel_layout, int wanted_nb
     wanted_spec.silence = 0;
     wanted_spec.samples = FFMAX(SDL_AUDIO_MIN_BUFFER_SIZE, 2 << av_log2(wanted_spec.freq / SDL_AUDIO_MAX_CALLBACKS_PER_SEC));
     wanted_spec.callback = sdl_audio_callback;
+#ifdef REALTEK_PATCH
+    if (audio_compr)
+        wanted_spec.callback = NULL;
+#endif
     wanted_spec.userdata = opaque;
     while (!(audio_dev = SDL_OpenAudioDevice(NULL, 0, &wanted_spec, &spec, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_CHANNELS_CHANGE))) {
         av_log(NULL, AV_LOG_WARNING, "SDL_OpenAudio (%d channels, %d Hz): %s\n",
@@ -2539,6 +2856,55 @@ static int audio_open(void *opaque, int64_t wanted_channel_layout, int wanted_nb
     return spec.size;
 }
 
+#ifdef REALTEK_PATCH
+static int rtk_compress_open(AVCodecContext *avctx)
+{
+    struct compr_config config;
+    struct snd_codec codec;
+    unsigned int card, device;
+
+    memset(&config, 0, sizeof(config));
+    memset(&codec, 0, sizeof(codec));
+
+    switch (avctx->codec_id) {
+    case AV_CODEC_ID_MP3:
+        codec.id = SND_AUDIOCODEC_MP3;
+        break;
+    case AV_CODEC_ID_AC3:
+        codec.id = SND_AUDIOCODEC_AC3;
+        break;
+    case AV_CODEC_ID_DTS:
+        codec.id = SND_AUDIOCODEC_DTS;
+        break;
+    default:
+        av_log(NULL, AV_LOG_WARNING, "    Compressed audio format not supported\n");
+        return -1;
+    }
+
+    codec.ch_in = avctx->channels;
+    codec.ch_out = avctx->channels;
+    codec.sample_rate = avctx->sample_rate;
+    codec.bit_rate = avctx->bit_rate;
+    av_log(NULL, AV_LOG_INFO, "    Compressed audio mode enabled\n");
+
+    /* use driver defaults */
+    config.fragment_size = 0;
+    config.fragments = 0;
+
+    config.codec = &codec;
+
+    /* open compressed device /dev/snd/comprC0D0 */
+    card = 0;
+    device = 0;
+    compress = compress_open(card, device, COMPRESS_IN, &config);
+    if (!compress || !is_compress_ready(compress)) {
+        return -1;
+    }
+
+    return 0;
+}
+#endif  /* REALTEK_PATCH */
+
 /* open a given stream. Return 0 if OK */
 static int stream_component_open(VideoState *is, int stream_index)
 {
@@ -2552,6 +2918,9 @@ static int stream_component_open(VideoState *is, int stream_index)
     int64_t channel_layout;
     int ret = 0;
     int stream_lowres = lowres;
+#ifdef REALTEK_PATCH
+    int renderFlg = 1;
+#endif
 
     if (stream_index < 0 || stream_index >= ic->nb_streams)
         return -1;
@@ -2593,6 +2962,10 @@ static int stream_component_open(VideoState *is, int stream_index)
 
     if (fast)
         avctx->flags2 |= AV_CODEC_FLAG2_FAST;
+
+#ifdef REALTEK_PATCH
+    avctx->opaque = &renderFlg;
+#endif
 
     opts = filter_codec_opts(codec_opts, avctx->codec_id, ic, ic->streams[stream_index], codec);
     if (!av_dict_get(opts, "threads", NULL, 0))
@@ -2636,8 +3009,18 @@ static int stream_component_open(VideoState *is, int stream_index)
 #endif
 
         /* prepare audio output */
+#ifdef REALTEK_PATCH
+        if (audio_compr) {
+            if ((ret = rtk_compress_open(avctx)) < 0)
+                goto fail;
+        }
+        else
+#endif
+        {  /* not audio_compr */
         if ((ret = audio_open(is, channel_layout, nb_channels, sample_rate, &is->audio_tgt)) < 0)
             goto fail;
+        }  /* not audio_compr */
+
         is->audio_hw_buf_size = ret;
         is->audio_src = is->audio_tgt;
         is->audio_buf_size  = 0;
@@ -2979,7 +3362,11 @@ static int read_thread(void *arg)
             continue;
         }
         if (!is->paused &&
+#ifdef REALTEK_PATCH
+            (!is->audio_st || (is->auddec.finished == is->audioq.serial && frame_queue_nb_remaining(&is->sampq) == 0) || (audio_compr && audcompr_finished)) &&
+#else
             (!is->audio_st || (is->auddec.finished == is->audioq.serial && frame_queue_nb_remaining(&is->sampq) == 0)) &&
+#endif
             (!is->video_st || (is->viddec.finished == is->videoq.serial && frame_queue_nb_remaining(&is->pictq) == 0))) {
             if (loop != 1 && (!loop || --loop)) {
                 stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
@@ -3181,7 +3568,11 @@ static void stream_cycle_channel(VideoState *is, int codec_type)
 static void toggle_full_screen(VideoState *is)
 {
     is_full_screen = !is_full_screen;
+#ifndef REALTEK_PATCH
     SDL_SetWindowFullscreen(window, is_full_screen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+#else
+    //is->rtk_func->rtk_direct_disp_set_window(0, 0, 1920, 1080);
+#endif
 }
 
 static void toggle_audio_display(VideoState *is)
@@ -3546,6 +3937,109 @@ static int opt_codec(void *optctx, const char *opt, const char *arg)
    return 0;
 }
 
+#ifdef REALTEK_PATCH
+static int opt_res(void *optctx, const char *opt, const char *arg)
+{
+    int res = parse_number_or_die(opt, arg, OPT_INT64, 0, INT_MAX);
+    switch(res)
+    {
+        case 1:
+            hdmiAttr.mode = HDMI_OUTPUT_1080P_50;
+            screen_width = 1920;
+            screen_height = 1080;
+            break;
+        case 2:
+            hdmiAttr.mode = HDMI_OUTPUT_1080P_30;
+            screen_width = 1920;
+            screen_height = 1080;
+            break;
+        case 3:
+            hdmiAttr.mode = HDMI_OUTPUT_1080P_24;
+            screen_width = 1920;
+            screen_height = 1080;
+            break;
+        case 4:
+            hdmiAttr.mode = HDMI_OUTPUT_4K_60;
+            screen_width = 3840;
+            screen_height = 2160;
+            break;
+        case 5:
+            hdmiAttr.mode = HDMI_OUTPUT_4K_50;
+            screen_width = 3840;
+            screen_height = 2160;
+            break;
+        case 6:
+            hdmiAttr.mode = HDMI_OUTPUT_4K_30;
+            screen_width = 3840;
+            screen_height = 2160;
+            break;
+        case 7:
+            hdmiAttr.mode = HDMI_OUTPUT_4K_25;
+            screen_width = 3840;
+            screen_height = 2160;
+            break;
+        case 8:
+            hdmiAttr.mode = HDMI_OUTPUT_4K_24;
+            screen_width = 3840;
+            screen_height = 2160;
+            break;
+        case 9:
+            hdmiAttr.mode = HDMI_OUTPUT_720P_60;
+            screen_width = 1280;
+            screen_height = 720;
+            break;
+        case 10:
+            hdmiAttr.mode = HDMI_OUTPUT_720P_50;
+            screen_width = 1280;
+            screen_height = 720;
+            break;
+        case 11:
+            hdmiAttr.mode = HDMI_OUTPUT_NTSC;
+            screen_width = 720;
+            screen_height = 480;
+            break;
+        case 12:
+            hdmiAttr.mode = HDMI_OUTPUT_PAL;
+            screen_width = 720;
+            screen_height = 576;
+            break;
+        case 13:
+            hdmiAttr.mode = HDMI_OUTPUT_AUTO;
+            break;
+        case 0:
+        default:
+            hdmiAttr.mode = HDMI_OUTPUT_1080P_60;
+            screen_width = 1920;
+            screen_height = 1080;
+            break;
+    }
+    return 0;
+}
+
+static int opt_bitdepth(void *optctx, const char *opt, const char *arg)
+{
+    int depth = parse_number_or_die(opt, arg, OPT_INT64, 0, INT_MAX);
+    switch(depth)
+    {
+        case 1:
+            hdmiAttr.bitDepth = OUTPUT_BIT_DEPTH_10BIT;
+            break;
+        case 2:
+            hdmiAttr.bitDepth = OUTPUT_BIT_DEPTH_12BIT;
+            break;
+        case 3:
+            hdmiAttr.bitDepth = OUTPUT_BIT_DEPTH_AUTO;
+            break;
+        case 0:
+        default:
+            hdmiAttr.bitDepth = OUTPUT_BIT_DEPTH_8BIT;
+            break;
+    }
+    return 0;
+}
+
+#endif
+
 static int dummy;
 
 static const OptionDef options[] = {
@@ -3596,6 +4090,12 @@ static const OptionDef options[] = {
     { "autorotate", OPT_BOOL, { &autorotate }, "automatically rotate video", "" },
     { "find_stream_info", OPT_BOOL | OPT_INPUT | OPT_EXPERT, { &find_stream_info },
         "read and decode the streams to fill missing information with heuristics" },
+#ifdef REALTEK_PATCH
+    { "res", HAS_ARG, { .func_arg = opt_res }, "force HDMITx resolution ([0] = 1080p@60, [1] = 1080p@50, [2] = 1080p@30, [3] = 1080p@24, [4] = 4k@60, [5] = 4k@50, [6] = 4k@30, [7] = 4k@25, [8] = 4k@24, [9] = 720p@60, [10] = 720p@50), [11] = NTSC(p), [12] = PAL(p), [13] = Auto", "" },
+    { "bitdepth", HAS_ARG, { .func_arg = opt_bitdepth }, "force HDMITx bit depth ([0] = 8 bit, [1] = 10 bit, [2] = 12 bit, [3] = AUTO", "" },
+    { "rtk_mi_version", OPT_INT | HAS_ARG, { &rtk_mi_version }, "Show verion information about RTK mi", "" },
+    { "acompr", OPT_BOOL, {&audio_compr}, "compressed audio mode" },
+#endif
     { NULL, },
 };
 
@@ -3707,7 +4207,11 @@ int main(int argc, char **argv)
             flags |= SDL_WINDOW_BORDERLESS;
         else
             flags |= SDL_WINDOW_RESIZABLE;
+#ifdef REALTEK_PATCH
+        window = SDL_CreateWindow("", 0, 0, 0, 0, SDL_WINDOW_BORDERLESS);
+#else
         window = SDL_CreateWindow(program_name, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, default_width, default_height, flags);
+#endif
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
         if (window) {
             renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
@@ -3731,6 +4235,55 @@ int main(int argc, char **argv)
         av_log(NULL, AV_LOG_FATAL, "Failed to initialize VideoState!\n");
         do_exit(NULL);
     }
+
+#ifdef REALTEK_PATCH
+    gIs = is;
+    is->rtk_func = rtk_init(is);
+    if(!is->rtk_func){
+        av_log(NULL, AV_LOG_FATAL, "Failed to initialize RTK MI Player!\n");
+        do_exit(NULL);
+    }
+
+    if(hdmiAttr.mode != HDMI_OUTPUT_NONE || hdmiAttr.bitDepth != OUTPUT_BIT_DEPTH_NONE)
+    {
+        DPAttr_t dpAttr = {DP_OUTPUT_NONE, OUTPUT_BIT_DEPTH_NONE};
+
+        if(hdmiAttr.mode == HDMI_OUTPUT_NONE)
+            hdmiAttr.mode = HDMI_OUTPUT_1080P_60;
+
+        if(hdmiAttr.bitDepth == OUTPUT_BIT_DEPTH_NONE)
+            hdmiAttr.bitDepth = OUTPUT_BIT_DEPTH_8BIT;
+
+        if(is->rtk_func->rtk_MI_VO_SetOutputAttribute(hdmiAttr, dpAttr) != RTK_MI_SUCCESS)
+            av_log(NULL, AV_LOG_ERROR, "rtk set hdmitx fail\n");
+        av_usleep(1000000); //wait for hdmi setting
+
+        if(hdmiAttr.mode == HDMI_OUTPUT_AUTO)
+        {
+            HDMITxSt_t hdmiSt;
+            DPTxSt_t dpSt;
+            if(is->rtk_func->rtk_MI_VO_GetOutput(&hdmiSt, &dpSt) == RTK_MI_SUCCESS)
+            {
+                screen_width = hdmiSt.width;
+                screen_height = hdmiSt.height;
+            }
+            else
+                av_log(NULL, AV_LOG_ERROR, "rtk get hdmitx resolution fail\n");
+        }
+    }
+    else
+    {
+        HDMITxSt_t hdmiSt;
+        DPTxSt_t dpSt;
+        if(is->rtk_func->rtk_MI_VO_GetOutput(&hdmiSt, &dpSt) == RTK_MI_SUCCESS)
+        {
+            screen_width = hdmiSt.width;
+            screen_height = hdmiSt.height;
+        }
+        else
+            av_log(NULL, AV_LOG_ERROR, "rtk get hdmitx resolution fail\n");
+    }
+#endif
 
     event_loop(is);
 

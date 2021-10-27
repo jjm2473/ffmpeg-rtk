@@ -29,6 +29,23 @@
 #include "avcodec.h"
 #include "version.h"
 
+#ifdef REALTEK_PATCH
+extern AVCodec ff_h264_rma_decoder;
+extern AVCodec ff_mpeg4_rma_decoder;
+extern AVCodec ff_mjpeg_rma_decoder;
+extern AVCodec ff_hevc_rma_decoder;
+extern AVCodec ff_mpeg1_rma_decoder;
+extern AVCodec ff_mpeg2_rma_decoder;
+extern AVCodec ff_vp8_rma_decoder;
+extern AVCodec ff_vp9_rma_decoder;
+extern AVCodec ff_vc1_rma_decoder;
+extern AVCodec ff_wmv3_rma_decoder;
+extern AVCodec ff_avs_rma_decoder;
+extern AVCodec ff_cavs_rma_decoder;
+extern AVCodec ff_h263_rma_decoder;
+extern AVCodec ff_flv_rma_decoder;
+#endif
+
 extern AVCodec ff_a64multi_encoder;
 extern AVCodec ff_a64multi5_encoder;
 extern AVCodec ff_aasc_decoder;
@@ -175,6 +192,9 @@ extern AVCodec ff_mdec_decoder;
 extern AVCodec ff_mimic_decoder;
 extern AVCodec ff_mjpeg_encoder;
 extern AVCodec ff_mjpeg_decoder;
+#ifdef REALTEK_PATCH
+extern AVCodec ff_mjpeg_video_decoder;
+#endif
 extern AVCodec ff_mjpegb_decoder;
 extern AVCodec ff_mmvideo_decoder;
 extern AVCodec ff_motionpixels_decoder;
@@ -723,6 +743,7 @@ extern AVCodec ff_h264_amf_encoder;
 extern AVCodec ff_h264_cuvid_decoder;
 extern AVCodec ff_h264_nvenc_encoder;
 extern AVCodec ff_h264_omx_encoder;
+extern AVCodec ff_mpeg4_omx_encoder;
 extern AVCodec ff_h264_qsv_encoder;
 extern AVCodec ff_h264_v4l2m2m_encoder;
 extern AVCodec ff_h264_vaapi_encoder;

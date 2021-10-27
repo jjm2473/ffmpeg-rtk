@@ -338,12 +338,25 @@ sigterm_handler(int sig)
     received_sigterm = sig;
     received_nb_signals++;
     term_exit_sigsafe();
+
+#ifdef REALTEK_PATCH
+    if(received_nb_signals > 10) {
+        write(2/*STDERR_FILENO*/, "Received > 10 system signals, hard exiting\n",
+                           strlen("Received > 10 system signals, hard exiting\n"));
+
+        exit(123);
+    }
+    else{
+        signal(sig , sigterm_handler);
+    }
+#else
     if(received_nb_signals > 3) {
         ret = write(2/*STDERR_FILENO*/, "Received > 3 system signals, hard exiting\n",
                     strlen("Received > 3 system signals, hard exiting\n"));
         if (ret < 0) { /* Do nothing */ };
         exit(123);
     }
+#endif
 }
 
 #if HAVE_SETCONSOLECTRLHANDLER
@@ -1111,7 +1124,7 @@ static void do_video_out(OutputFile *of,
             format_video_sync != VSYNC_PASSTHROUGH &&
             format_video_sync != VSYNC_DROP) {
             if (delta0 < -0.6) {
-                av_log(NULL, AV_LOG_WARNING, "Past duration %f too large\n", -delta0);
+                av_log(NULL, AV_LOG_VERBOSE, "Past duration %f too large\n", -delta0);
             } else
                 av_log(NULL, AV_LOG_DEBUG, "Clipping frame in rate conversion by %f\n", -delta0);
             sync_ipts = ost->sync_opts;
@@ -1799,6 +1812,20 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
     } else {
         av_bprintf(&buf, " speed=%4.3gx", speed);
         av_bprintf(&buf_script, "speed=%4.3gx\n", speed);
+    }
+
+    secs = t;
+    mins = secs / 60;
+    secs %= 60;
+    hours = mins / 60;
+    mins %= 60;
+
+    if (t < 0) {
+        av_bprintf(&buf, " total_time=N/A");
+        av_bprintf(&buf_script, "total_time=N/A\n");
+    } else {
+        av_bprintf(&buf, " total_time=%02d:%02d:%02d", hours, mins, secs);
+        av_bprintf(&buf_script, "total_time=%02d:%02d:%02d\n", hours, mins, secs);
     }
 
     if (print_stats || is_last_report) {

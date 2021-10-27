@@ -594,6 +594,13 @@ typedef struct AVFrame {
      * for the target frame's private_ref field.
      */
     AVBufferRef *private_ref;
+
+#ifdef REALTEK_PATCH
+    /**
+     * for some private data of Realtek
+     */
+    void *rtk_data;
+#endif
 } AVFrame;
 
 #if FF_API_FRAME_GET_SET
