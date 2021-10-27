@@ -14,6 +14,7 @@
 #define RMA_RESID 1
 
 // for ffmpeg build
+#include "cmdutils.h"
 const char program_name[] = "ffmpeg_rtk";
 const int program_birth_year = 2021;
 void show_help_default(const char *opt, const char *arg) {}
