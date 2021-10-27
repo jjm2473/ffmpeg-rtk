@@ -16,12 +16,13 @@
 	--enable-pic \
 	--enable-libmp3lame \
 	--disable-hwaccels \
+	--disable-vaapi \
 	--disable-iconv \
 	--disable-lzma \
 	--disable-protocol=concat \
 	--disable-schannel \
-	--disable-shared \
-	--enable-static \
+	--enable-shared \
+	--disable-static \
 	--enable-gpl \
 	--enable-libvorbis \
 	--enable-muxers \
