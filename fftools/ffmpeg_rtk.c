@@ -67,11 +67,13 @@ int image_dump = 0;
 int h264_image_dump = 0;
 int dump_attachment = 0;
 int copy_video = 0;
+int aac = 0;
+int hls = 0;
 int ext_c;
 const char* ext_v[16];
 
 static int conv(const char **arg) {
-    int w,h;
+    int i,w,h;
     const char *p = NULL;
     if (!strcmp("-vf", *arg) || !strcmp("-filter_complex", *arg)) {
         if (!strcmp("-vf", *arg)) {
@@ -116,15 +118,37 @@ static int conv(const char **arg) {
         }
     } else if (!strncmp("-profile:v", *arg, 10)) {
         return DROP|0x2;
-#if CONFIG_LIBFDK_AAC_ENCODER
     } else if (!strcmp("-codec:a:0", *arg)) {
         if (!strcmp("aac", arg[1])) {
-            ext_c = 2;
-            ext_v[0] = "-codec:a:0";
-            ext_v[1] = "libfdk_aac";
+            aac = 1;
+            i = 0;
+            ext_c = 0;
+            if (hls) {
+                ext_c = 2;
+                ext_v[i++] = "-flags:a";
+                ext_v[i++] = "-global_header";
+            }
+#if CONFIG_LIBFDK_AAC_ENCODER
+            ext_c += 2;
+            ext_v[i++] = "-codec:a:0";
+            ext_v[i++] = "libfdk_aac";
             return EXTEND|DROP|0x2;
-        }
+#else
+            if (ext_c) {
+                return EXTEND;
+            }
 #endif
+        }
+    } else if (has_input && !strcmp("-f", *arg)) {
+        if (!strcmp("hls", arg[1])) {
+            hls = 1;
+            if (aac) {
+                ext_c = 2;
+                ext_v[0] = "-flags:a";
+                ext_v[1] = "-global_header";
+                return EXTEND;
+            }
+        }
     } else if (!strcmp("-maxrate", *arg)) {
         if (libx264_to_omx) {
             ext_c = 2;
