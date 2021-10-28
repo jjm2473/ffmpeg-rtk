@@ -119,7 +119,7 @@ static int conv(const char **arg) {
     } else if (!strncmp("-profile:v", *arg, 10)) {
         return DROP|0x2;
     } else if (!strcmp("-codec:a:0", *arg)) {
-        if (!strcmp("aac", arg[1])) {
+        if (!strcmp("aac", arg[1]) || !strcmp("libfdk_aac", arg[1])) {
             aac = 1;
             i = 0;
             ext_c = 0;
