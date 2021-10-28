@@ -287,7 +287,8 @@ int main(int argc, char *argv[])
             nargv[MAX_RMA_DEC_ARGC - (pargc++)] = bufprintf("%d", target_w > 0 && target_w <= 1920 ? target_w : 1920);
             nargv[MAX_RMA_DEC_ARGC - (pargc++)] = "-dec_o_width";
 
-            nargv[MAX_RMA_DEC_ARGC - (pargc++)] = "-xerror";
+            if (NULL != getenv("RTK_RMA_XERROR"))
+                nargv[MAX_RMA_DEC_ARGC - (pargc++)] = "-xerror";
         }
     }
 
