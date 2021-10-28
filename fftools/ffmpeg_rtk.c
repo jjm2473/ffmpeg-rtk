@@ -305,7 +305,7 @@ int main(int argc, char *argv[])
 
         if (1) {
             nargv[MAX_RMA_DEC_ARGC - (pargc++)] = "1";
-            nargv[MAX_RMA_DEC_ARGC - (pargc++)] = "–auto_resize";
+            nargv[MAX_RMA_DEC_ARGC - (pargc++)] = "-auto_resize";
             nargv[MAX_RMA_DEC_ARGC - (pargc++)] = bufprintf("%d", target_h >= 144 && target_h <= 1080 ? target_h : 1080);
             nargv[MAX_RMA_DEC_ARGC - (pargc++)] = "-dec_o_height";
             nargv[MAX_RMA_DEC_ARGC - (pargc++)] = bufprintf("%d", target_w > 0 && target_w <= 1920 ? target_w : 1920);
