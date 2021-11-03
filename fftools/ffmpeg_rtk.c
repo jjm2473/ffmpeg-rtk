@@ -308,6 +308,10 @@ int main(int argc, char *argv[])
         if (target_h == -1) {
             target_h = 1080;
             target_w = 1920;
+            if (image_dump) {
+                target_h = 720;
+                target_w = 1280;
+            }
         }
         if (1) {
             nargv[MAX_RMA_DEC_ARGC - (pargc++)] = "1";
