@@ -565,15 +565,15 @@ static int rma_decode_frame(AVCodecContext *avctx, void *data,
             av_fifo_generic_read(s->fifo, &input_pkt, sizeof(input_pkt), NULL);
 
             if (s->bsfc) {
-            ret = av_bsf_send_packet(s->bsfc, &input_pkt);
-            if (ret < 0) {
-                return ret;
-            }
+                ret = av_bsf_send_packet(s->bsfc, &input_pkt);
+                if (ret < 0) {
+                    return ret;
+                }
 
-            ret = av_bsf_receive_packet(s->bsfc, &s->filtered_pkt);
-            if (ret == AVERROR(EAGAIN)) {
-                goto done;
-            }
+                ret = av_bsf_receive_packet(s->bsfc, &s->filtered_pkt);
+                if (ret == AVERROR(EAGAIN)) {
+                    goto done;
+                }
             } else {
                 av_packet_move_ref(&s->filtered_pkt, &input_pkt);
             }

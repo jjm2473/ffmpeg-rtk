@@ -92,6 +92,8 @@ static int conv(const char **arg) {
         } else if (!strncmp("zscale=", arg[1], 7) && target_h == -1) {
             h = 1080;
             w = 1920;
+        } else {
+            return DROP|0x2;
         }
         if (w > 1920) {
             w = 1920;
@@ -303,6 +305,10 @@ int main(int argc, char *argv[])
             nargv[MAX_RMA_DEC_ARGC - (pargc++)] = "-dec_o_fps";
         }
 
+        if (target_h == -1) {
+            target_h = 1080;
+            target_w = 1920;
+        }
         if (1) {
             nargv[MAX_RMA_DEC_ARGC - (pargc++)] = "1";
             nargv[MAX_RMA_DEC_ARGC - (pargc++)] = "-auto_resize";
