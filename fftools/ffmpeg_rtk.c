@@ -89,9 +89,6 @@ static int conv(const char **arg) {
                 1 != sscanf(p, "scale=trunc(min(max(iw,ih*dar),%d)/2)*2:trunc(ow/dar/2)*2", &w)) {
                 w = 1920;
             }
-        } else if (!strncmp("zscale=", arg[1], 7) && target_h == -1) {
-            h = 1080;
-            w = 1920;
         } else {
             return DROP|0x2;
         }
