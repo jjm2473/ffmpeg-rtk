@@ -86,7 +86,9 @@ static int conv(const char **arg) {
 
         if (p) {
             if (1 != sscanf(p, "scale=trunc(min(max(iw\\,ih*dar)\\,%d)/2)*2:trunc(ow/dar/2)*2", &w) &&
-                1 != sscanf(p, "scale=trunc(min(max(iw,ih*dar),%d)/2)*2:trunc(ow/dar/2)*2", &w)) {
+                1 != sscanf(p, "scale=trunc(min(max(iw,ih*dar),%d)/2)*2:trunc(ow/dar/2)*2", &w) &&
+                1 != sscanf(p, "scale=trunc(min(max(iw\\,ih*dar)\\,min(%d\\,", &w) &&
+                1 != sscanf(p, "scale=trunc(min(max(iw,ih*dar),min(%d,", &w)) {
                 w = 1920;
             }
         } else {
