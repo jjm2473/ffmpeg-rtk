@@ -1059,8 +1059,9 @@ static int omx_encode_frame(AVCodecContext *avctx, AVPacket *pkt,
 #else
         if (s->extraDataInit && (avctx->flags & AV_CODEC_FLAG_GLOBAL_HEADER)
             && (buffer->nFlags & OMX_BUFFERFLAG_CODECCONFIG) && (buffer->nFlags & OMX_BUFFERFLAG_SYNCFRAME)) {
-                int newsize = s->output_buf_size + avctx->extradata_size + buffer->nFilledLen + AV_INPUT_BUFFER_PADDING_SIZE;;
                 s->extraDataInit = 0;
+#if 0
+                int newsize = s->output_buf_size + avctx->extradata_size + buffer->nFilledLen + AV_INPUT_BUFFER_PADDING_SIZE;;
                 if ((ret = av_reallocp(&s->output_buf, newsize)) < 0) {
                     s->output_buf_size = 0;
                     goto end;
@@ -1084,6 +1085,7 @@ static int omx_encode_frame(AVCodecContext *avctx, AVPacket *pkt,
                 pkt->flags |= AV_PKT_FLAG_KEY;
                 *got_packet = 1;
 
+#endif
         } else {
 #endif
             if (!(buffer->nFlags & OMX_BUFFERFLAG_ENDOFFRAME) || !pkt->data) {
