@@ -69,6 +69,8 @@ int dump_attachment = 0;
 int copy_video = 0;
 int aac = 0;
 int hls = 0;
+int tonemap = 0;
+int thumbnail = 0;
 int ext_c;
 const char* ext_v[16];
 
@@ -79,6 +81,12 @@ static int conv(const char **arg) {
         if (!strcmp("-vf", *arg)) {
             if (!strncmp("scale=trunc(", arg[1], 12)) {
                 p = arg[1];
+            }
+            if (strstr(arg[1], "tonemap=")) {
+                tonemap = 1;
+            }
+            if (strstr(arg[1], "thumbnail=")) {
+                thumbnail = 1;
             }
         } else {
             p = strstr(arg[1], "scale=trunc(");
@@ -334,6 +342,9 @@ int main(int argc, char *argv[])
     printf("\n");
     return 0;
 #else
+    if (image_dump && (tonemap || thumbnail)) {
+        return 1;
+    }
     if (dump_attachment) {
         return execvp("ffmpeg.img", argv);
     } else {
