@@ -282,8 +282,8 @@ fail:
     return -1;
 }
 
+static int defmax[] = {3,2};
 static int acquire_res(int res) {
-    static const int defmax[] = {3,2};
     static const char * const envkeys[] = {"RTK_RES_CPU", "RTK_RES_RMA"};
     int max = defmax[res];
     char* val = getenv(envkeys[res]);
@@ -348,6 +348,9 @@ int main(int argc, char *argv[])
     if (dump_attachment) {
         return execvp("ffmpeg.img", argv);
     } else {
+        if (image_dump)
+            defmax[RMA_RESID] = 1;
+
         if (!skip_video && -1 == acquire_res(h264_image_dump || copy_video ? CPU_RESID : RMA_RESID))
             return 1;
         return execvp("ffmpeg.rtk", nargv+(MAX_RMA_DEC_ARGC - pargc));
