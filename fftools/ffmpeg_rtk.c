@@ -242,24 +242,29 @@ static int conv_opts(int argc, char *argv[], char* nargv[]) {
  */
 static int acquire_res0(int res, int max) {
     struct timespec delay;
-    int i, ret;
+    struct timespec delay1s;
+    int i, ret, locked;
+    int fd;
     int *locks = (int *)malloc(sizeof(int) * max);
     if (NULL == locks)
         return -1;
     delay.tv_sec = 0;
     delay.tv_nsec = 100000000L;
+    delay1s.tv_sec = 1;
+    delay1s.tv_nsec = 0;
     char rmalock[] = "/var/lock/rma.N.lock";
     char cpulock[] = "/var/lock/cpu.N.lock";
     char* lockpath = res?rmalock:cpulock;
 
     for (i=0;i<max;++i) {
         lockpath[14] = '0'+i;
-        int fd = open(lockpath, O_RDONLY|O_CREAT, S_IRUSR|S_IRGRP);
+        fd = open(lockpath, O_RDONLY|O_CREAT, S_IRUSR|S_IRGRP);
         if (fd != -1)
             locks[i] = fd;
         else
-            goto fail;
+            goto fail0;
     }
+    locked = -1;
     i = 0;
     while (-1 == flock(locks[i], LOCK_EX|LOCK_NB)) {
         if (EWOULDBLOCK != errno) {
@@ -269,15 +274,39 @@ static int acquire_res0(int res, int max) {
         ++i;
         if (max == i) {
             if (-1 == nanosleep(&delay, NULL)) {
-                goto fail;
+                goto fail0;
             }
             i = 0;
         }
     }
+    locked = i;
 
+    if (RMA_RESID == res) {
+        fd = open("/var/lock/rma_delay.lock", O_RDONLY|O_CREAT, S_IRUSR|S_IRGRP);
+
+        if (fd == -1)
+            goto fail;
+
+        if (0 == flock(fd, LOCK_EX)) {
+            ret = nanosleep(&delay1s, NULL);
+            flock(fd, LOCK_UN);
+            if (-1 == ret)
+                goto fail;
+        }
+    }
+
+    for (i=0;i<max;++i) {
+        if (i != locked) {
+            close(locks[i]);
+        }
+    }
     free(locks);
-    return i;
+    return locked;
 fail:
+    if (-1 != locked) {
+        flock(locks[locked], LOCK_UN);
+    }
+fail0:
     free(locks);
     return -1;
 }
@@ -351,7 +380,7 @@ int main(int argc, char *argv[])
         if (image_dump)
             defmax[RMA_RESID] = 1;
 
-        if (!skip_video && -1 == acquire_res(h264_image_dump || copy_video ? CPU_RESID : RMA_RESID))
+        if (!skip_video && has_input && -1 == acquire_res(h264_image_dump || copy_video ? CPU_RESID : RMA_RESID))
             return 1;
         return execvp("ffmpeg.rtk", nargv+(MAX_RMA_DEC_ARGC - pargc));
     }
