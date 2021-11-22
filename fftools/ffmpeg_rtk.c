@@ -242,7 +242,6 @@ static int conv_opts(int argc, char *argv[], char* nargv[]) {
  */
 static int acquire_res0(int res, int max) {
     struct timespec delay;
-    struct timespec delay1s;
     int i, ret, locked;
     int fd;
     int *locks = (int *)malloc(sizeof(int) * max);
@@ -250,8 +249,6 @@ static int acquire_res0(int res, int max) {
         return -1;
     delay.tv_sec = 0;
     delay.tv_nsec = 100000000L;
-    delay1s.tv_sec = 1;
-    delay1s.tv_nsec = 0;
     char rmalock[] = "/var/lock/rma.N.lock";
     char cpulock[] = "/var/lock/cpu.N.lock";
     char* lockpath = res?rmalock:cpulock;
@@ -288,7 +285,14 @@ static int acquire_res0(int res, int max) {
             goto fail;
 
         if (0 == flock(fd, LOCK_EX)) {
-            ret = nanosleep(&delay1s, NULL);
+            if (image_dump) {
+                delay.tv_sec = 1;
+                delay.tv_nsec = 0;
+            } else {
+                delay.tv_sec = 0;
+                delay.tv_nsec = 500000000L;
+            }
+            ret = nanosleep(&delay, NULL);
             flock(fd, LOCK_UN);
             if (-1 == ret)
                 goto fail;
