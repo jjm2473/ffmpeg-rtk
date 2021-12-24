@@ -278,20 +278,15 @@ static int acquire_res0(int res, int max) {
     }
     locked = i;
 
-    if (RMA_RESID == res) {
+    if (RMA_RESID == res && image_dump) {
         fd = open("/var/lock/rma_delay.lock", O_RDONLY|O_CREAT, S_IRUSR|S_IRGRP);
 
         if (fd == -1)
             goto fail;
 
         if (0 == flock(fd, LOCK_EX)) {
-            if (image_dump) {
-                delay.tv_sec = 1;
-                delay.tv_nsec = 0;
-            } else {
-                delay.tv_sec = 0;
-                delay.tv_nsec = 500000000L;
-            }
+            delay.tv_sec = 0;
+            delay.tv_nsec = 500000000L;
             ret = nanosleep(&delay, NULL);
             flock(fd, LOCK_UN);
             if (-1 == ret)
@@ -384,8 +379,9 @@ int main(int argc, char *argv[])
         if (!skip_video && has_input && -1 == acquire_res(h264_image_dump || copy_video ? CPU_RESID : RMA_RESID))
             return 1;
 
-        fprintf(stderr, "\nffmpeg.rtk");
-        for (char **p = nargv+(MAX_RMA_DEC_ARGC - pargc); *p != NULL; ++p) {
+        char **p = nargv+(MAX_RMA_DEC_ARGC - pargc);
+        fprintf(stderr, "\n%s", *p);
+        for (++p; *p != NULL; ++p) {
             fprintf(stderr, " \"%s\"", *p);
         }
         fprintf(stderr, "\n");
