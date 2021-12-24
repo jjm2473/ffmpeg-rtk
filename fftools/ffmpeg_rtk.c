@@ -383,6 +383,12 @@ int main(int argc, char *argv[])
     } else {
         if (!skip_video && has_input && -1 == acquire_res(h264_image_dump || copy_video ? CPU_RESID : RMA_RESID))
             return 1;
+
+        fprintf(stderr, "\nffmpeg.rtk");
+        for (char **p = nargv+(MAX_RMA_DEC_ARGC - pargc); *p != NULL; ++p) {
+            fprintf(stderr, " \"%s\"", *p);
+        }
+        fprintf(stderr, "\n");
         return execvp("ffmpeg.rtk", nargv+(MAX_RMA_DEC_ARGC - pargc));
     }
 #endif
