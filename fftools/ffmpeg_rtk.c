@@ -306,7 +306,7 @@ fail0:
 }
 
 static int acquire_res(int res) {
-    static const int defmax[] = {3,2};
+    static const int defmax[] = {8,3};
     static const char * const envkeys[] = {"RTK_RES_CPU", "RTK_RES_RMA"};
     int max = defmax[res];
     char* val = getenv(envkeys[res]);
