@@ -75,7 +75,7 @@ int ext_c;
 const char* ext_v[16];
 
 static int conv(const char **arg) {
-    int i,w,h;
+    int w,h;
     const char *p = NULL;
     if (!strcmp("-vf", *arg) || !strcmp("-filter_complex", *arg)) {
         if (!strcmp("-vf", *arg)) {
@@ -116,9 +116,11 @@ static int conv(const char **arg) {
     } else if (!strncmp("-codec:v:", *arg, 9)) {
         if (!strcmp("libx264", arg[1])) {
             libx264_to_omx = 1;
-            ext_c = 2;
-            ext_v[0] = *arg;
-            ext_v[1] = "h264_omx";
+            ext_c = 0;
+            ext_v[ext_c++] = *arg;
+            ext_v[ext_c++] = "h264_omx";
+            ext_v[ext_c++] = "-flags:v";
+            ext_v[ext_c++] = "-global_header";
             return EXTEND|DROP|0x2;
         } else if (!strcmp("h264", arg[1])) {
             h264_image_dump = 1;
@@ -127,27 +129,20 @@ static int conv(const char **arg) {
         }
     } else if (!strncmp("-profile:v", *arg, 10)) {
         return DROP|0x2;
+#if CONFIG_LIBFDK_AAC_ENCODER
     } else if (!strcmp("-codec:a:0", *arg)) {
         if (!strcmp("aac", arg[1]) || !strcmp("libfdk_aac", arg[1])) {
             aac = 1;
-            i = 0;
             ext_c = 0;
+            ext_v[ext_c++] = "-codec:a:0";
+            ext_v[ext_c++] = "libfdk_aac";
             if (hls) {
-                ext_c = 2;
-                ext_v[i++] = "-flags:a";
-                ext_v[i++] = "-global_header";
+                ext_v[ext_c++] = "-flags:a";
+                ext_v[ext_c++] = "-global_header";
             }
-#if CONFIG_LIBFDK_AAC_ENCODER
-            ext_c += 2;
-            ext_v[i++] = "-codec:a:0";
-            ext_v[i++] = "libfdk_aac";
             return EXTEND|DROP|0x2;
-#else
-            if (ext_c) {
-                return EXTEND;
-            }
-#endif
         }
+#endif
     } else if (has_input && !strcmp("-f", *arg)) {
         if (!strcmp("hls", arg[1])) {
             hls = 1;
