@@ -67,6 +67,7 @@ int image_dump = 0;
 int h264_image_dump = 0;
 int dump_attachment = 0;
 int copy_video = 0;
+int copy_audio = 0;
 int aac = 0;
 int hls = 0;
 int tonemap = 0;
@@ -173,6 +174,21 @@ static int conv(const char **arg) {
         return BREAK;
     } else if (!strcmp("-vn", *arg)) {
         skip_video = 1;
+    } else if (!strcmp("-acodec", *arg)) {
+        if (!strcmp("copy", arg[1])) {
+            copy_audio = 1;
+        }
+    } else if (!strcmp("-fflags", *arg)) {
+        if (!strcmp("+igndts+genpts", arg[1])) {
+            return DROP|0x2;
+        }
+    } else if (!strcmp("-analyzeduration", *arg)) {
+        ext_c = 0;
+        ext_v[ext_c++] = "-analyzeduration";
+        ext_v[ext_c++] = "10000000";
+        ext_v[ext_c++] = "-probesize";
+        ext_v[ext_c++] = "10000000";
+        return EXTEND|DROP|0x2;
     }
     return CONTINUE;
 }
@@ -371,7 +387,7 @@ int main(int argc, char *argv[])
     if (dump_attachment) {
         return execvp("ffmpeg.img", argv);
     } else {
-        if (!skip_video && has_input && -1 == acquire_res(h264_image_dump || copy_video ? CPU_RESID : RMA_RESID))
+        if (!skip_video && has_input && !(copy_video && copy_audio) && -1 == acquire_res(h264_image_dump || copy_video ? CPU_RESID : RMA_RESID))
             return 1;
 
         char **p = nargv+(MAX_RMA_DEC_ARGC - pargc);
