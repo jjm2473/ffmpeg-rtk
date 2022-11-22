@@ -1,12 +1,13 @@
 AVPROGS-$(CONFIG_FFMPEG)   += ffmpeg
 AVPROGS-$(CONFIG_FFPLAY)   += ffplay
 AVPROGS-$(CONFIG_FFPROBE)  += ffprobe
-AVPROGS-$(CONFIG_RMA)      += ffmpeg_rtk
+WRAPPROGS-$(CONFIG_RMA)   += ffmpeg_wrap
 
 AVPROGS     := $(AVPROGS-yes:%=%$(PROGSSUF)$(EXESUF))
-PROGS       += $(AVPROGS)
+WRAPPROGS     := $(WRAPPROGS-yes:%=%$(PROGSSUF)$(EXESUF))
+PROGS       += $(AVPROGS) $(WRAPPROGS)
 
-AVBASENAMES  = ffmpeg ffplay ffprobe ffmpeg_rtk
+AVBASENAMES  = ffmpeg ffplay ffprobe ffmpeg_wrap
 ALLAVPROGS   = $(AVBASENAMES:%=%$(PROGSSUF)$(EXESUF))
 ALLAVPROGS_G = $(AVBASENAMES:%=%$(PROGSSUF)_g$(EXESUF))
 
@@ -30,7 +31,17 @@ endef
 
 $(foreach P,$(AVPROGS-yes),$(eval $(call DOFFTOOL,$(P))))
 
-all: $(AVPROGS)
+define DOWRAP
+OBJS-$(1) += fftools/$(1).o $(OBJS-$(1)-yes)
+$(1)$(PROGSSUF)_g$(EXESUF): $$(OBJS-$(1))
+$$(OBJS-$(1)): | fftools
+$$(OBJS-$(1)): CPPFLAGS  += -DHAVE_AV_CONFIG_H
+$(1)$(PROGSSUF)_g$(EXESUF): FF_EXTRALIBS :=
+-include $$(OBJS-$(1):.o=.d)
+endef
+$(foreach P,$(WRAPPROGS-yes),$(eval $(call DOWRAP,$(P))))
+
+all: $(AVPROGS) $(WRAPPROGS)
 
 fftools/ffprobe.o fftools/cmdutils.o: libavutil/ffversion.h | fftools
 OBJDIRS += fftools
